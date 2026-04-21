@@ -1,0 +1,192 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Enterprise Objections — Merge Agent Handler</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, 'Segoe UI', sans-serif;
+      background: linear-gradient(135deg, #f4f6fa 0%, #e8ecf3 100%);
+      color: #1a202c;
+      min-height: 100vh;
+      padding: 60px 20px;
+      line-height: 1.6;
+    }
+
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 48px;
+    }
+
+    header .eyebrow {
+      display: inline-block;
+      font-size: 0.75rem;
+      letter-spacing: 2px;
+      text-transform: uppercase;
+      color: #2e5c8a;
+      background: rgba(46, 92, 138, 0.1);
+      padding: 6px 14px;
+      border-radius: 20px;
+      font-weight: 600;
+      margin-bottom: 18px;
+    }
+
+    header h1 {
+      font-size: 2.4rem;
+      font-weight: 700;
+      color: #1a202c;
+      margin-bottom: 12px;
+      letter-spacing: -0.5px;
+    }
+
+    header p {
+      font-size: 1.05rem;
+      color: #5a6678;
+      max-width: 640px;
+      margin: 0 auto;
+    }
+
+    .reasons {
+      display: grid;
+      gap: 20px;
+    }
+
+    .reason {
+      background: #fff;
+      border-radius: 14px;
+      padding: 32px 36px;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.04);
+      border: 1px solid #e5e8ee;
+      display: grid;
+      grid-template-columns: 72px 1fr;
+      gap: 24px;
+      align-items: start;
+      transition: transform 0.2s, box-shadow 0.2s;
+    }
+
+    .reason:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 24px rgba(46, 92, 138, 0.12);
+    }
+
+    .number {
+      font-size: 2.6rem;
+      font-weight: 800;
+      color: #2e5c8a;
+      line-height: 1;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .reason h2 {
+      font-size: 1.25rem;
+      font-weight: 700;
+      color: #1a202c;
+      margin-bottom: 10px;
+    }
+
+    .reason p {
+      color: #4a5568;
+      font-size: 0.97rem;
+    }
+
+    .tag {
+      display: inline-block;
+      margin-top: 14px;
+      font-size: 0.72rem;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      color: #2e5c8a;
+      background: rgba(46, 92, 138, 0.08);
+      padding: 5px 10px;
+      border-radius: 4px;
+    }
+
+    footer {
+      text-align: center;
+      margin-top: 56px;
+      font-size: 0.82rem;
+      color: #8b95a7;
+    }
+
+    footer a {
+      color: #2e5c8a;
+      text-decoration: none;
+    }
+
+    footer a:hover { text-decoration: underline; }
+
+    @media (max-width: 640px) {
+      header h1 { font-size: 1.8rem; }
+      .reason { grid-template-columns: 1fr; padding: 24px; }
+      .number { font-size: 2rem; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <span class="eyebrow">Sales Enablement</span>
+      <h1>Why an Enterprise Prospect Might Pass</h1>
+      <p>Three realistic objections to Merge Agent Handler — and the underlying concerns driving each one.</p>
+    </header>
+
+    <div class="reasons">
+
+      <article class="reason">
+        <div class="number">01</div>
+        <div>
+          <h2>Existing integration infrastructure</h2>
+          <p>
+            Many large enterprises already run an iPaaS (MuleSoft, Workato, Boomi) or an internal
+            integrations platform with years of investment. Adopting Merge duplicates that stack
+            and forces a build-vs-buy conversation they've already settled.
+          </p>
+          <span class="tag">Build vs. Buy</span>
+        </div>
+      </article>
+
+      <article class="reason">
+        <div class="number">02</div>
+        <div>
+          <h2>Data governance and third-party processing concerns</h2>
+          <p>
+            Routing customer data through an external service triggers InfoSec review around data
+            residency, multi-tenancy isolation, compliance scope (SOC 2 / HIPAA / FedRAMP / GDPR),
+            and breach liability. For regulated industries or zero-trust shops, one more vendor in
+            the data path is a hard sell.
+          </p>
+          <span class="tag">Security &amp; Compliance</span>
+        </div>
+      </article>
+
+      <article class="reason">
+        <div class="number">03</div>
+        <div>
+          <h2>Coverage gaps for legacy or proprietary systems</h2>
+          <p>
+            "Thousands of connectors" covers modern SaaS well, but enterprises often live on
+            mainframe systems, internal APIs, regional tools, or acquired-company stacks that
+            won't be in the catalog. If the mission-critical integrations still need custom work,
+            the value of the platform shrinks.
+          </p>
+          <span class="tag">Coverage</span>
+        </div>
+      </article>
+
+    </div>
+
+    <footer>
+      Based on analysis of <a href="https://www.merge.dev/merge-agent-handler" target="_blank" rel="noopener">merge.dev/merge-agent-handler</a>
+    </footer>
+  </div>
+</body>
+</html>
