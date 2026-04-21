@@ -1,0 +1,259 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>People Directory</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, 'Segoe UI', sans-serif;
+      background: #f4f6fa;
+      color: #222;
+      padding: 40px 20px;
+      min-height: 100vh;
+    }
+
+    .container {
+      max-width: 900px;
+      margin: 0 auto;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.06);
+      overflow: hidden;
+    }
+
+    header {
+      background: #2e5c8a;
+      color: #fff;
+      padding: 24px 32px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      flex-wrap: wrap;
+    }
+
+    header h1 {
+      font-size: 1.5rem;
+      font-weight: 600;
+    }
+
+    header .count {
+      font-size: 0.85rem;
+      opacity: 0.85;
+    }
+
+    .toolbar {
+      padding: 16px 32px;
+      border-bottom: 1px solid #e5e8ee;
+      background: #fafbfd;
+      display: flex;
+      gap: 12px;
+      align-items: center;
+    }
+
+    #search {
+      flex: 1;
+      padding: 10px 14px;
+      font-size: 0.95rem;
+      border: 1px solid #d5dae2;
+      border-radius: 6px;
+      background: #fff;
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+
+    #search:focus {
+      outline: none;
+      border-color: #2e5c8a;
+      box-shadow: 0 0 0 3px rgba(46, 92, 138, 0.15);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    thead th {
+      text-align: left;
+      padding: 14px 32px;
+      font-size: 0.78rem;
+      font-weight: 600;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: #6b7280;
+      border-bottom: 2px solid #e5e8ee;
+      cursor: pointer;
+      user-select: none;
+      transition: background 0.1s;
+    }
+
+    thead th:hover { background: #f0f2f6; }
+
+    thead th .arrow {
+      display: inline-block;
+      margin-left: 6px;
+      opacity: 0.3;
+      font-size: 0.7rem;
+    }
+
+    thead th.sorted .arrow { opacity: 1; color: #2e5c8a; }
+
+    tbody td {
+      padding: 14px 32px;
+      border-bottom: 1px solid #f0f2f6;
+      font-size: 0.95rem;
+    }
+
+    tbody tr:last-child td { border-bottom: none; }
+
+    tbody tr:hover { background: #f8f9fc; }
+
+    tbody td:first-child {
+      font-weight: 500;
+      color: #111;
+    }
+
+    tbody td:nth-child(2) {
+      color: #555;
+    }
+
+    .empty {
+      padding: 48px 32px;
+      text-align: center;
+      color: #999;
+      font-style: italic;
+    }
+
+    footer {
+      padding: 16px 32px;
+      background: #fafbfd;
+      border-top: 1px solid #e5e8ee;
+      font-size: 0.78rem;
+      color: #6b7280;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .btn {
+      padding: 7px 14px;
+      border: 1px solid #d5dae2;
+      background: #fff;
+      border-radius: 6px;
+      font-size: 0.8rem;
+      cursor: pointer;
+      color: #444;
+      transition: background 0.15s;
+    }
+
+    .btn:hover { background: #f0f2f6; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>People Directory</h1>
+      <div class="count"><span id="visible-count">10</span> of <span id="total-count">10</span> entries</div>
+    </header>
+
+    <div class="toolbar">
+      <input id="search" type="text" placeholder="Search names or addresses...">
+      <button class="btn" id="csv-btn">Export CSV</button>
+    </div>
+
+    <table>
+      <thead>
+        <tr>
+          <th data-col="0">Name <span class="arrow">▲▼</span></th>
+          <th data-col="1">Address <span class="arrow">▲▼</span></th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+
+    <footer>
+      <span>Click column headers to sort</span>
+      <span>Generated locally</span>
+    </footer>
+  </div>
+
+  <script>
+    const DATA = [
+      ["Margaret Lewis",   "2460 Main St, Seattle, WA 98101"],
+      ["John Clark",       "8474 Spring St, Boston, MA 02108"],
+      ["Barbara Davis",    "6851 Meadow Ln, Atlanta, GA 30301"],
+      ["Susan Rodriguez",  "4322 Ridge Rd, Minneapolis, MN 55401"],
+      ["James Brown",      "3841 Elm St, Minneapolis, MN 55401"],
+      ["Karen Harris",     "4209 Spring St, Atlanta, GA 30301"],
+      ["Joseph Ramirez",   "3257 Church St, Indianapolis, IN 46201"],
+      ["Patricia Johnson", "8088 Jefferson St, Chicago, IL 60601"],
+      ["Susan Ramirez",    "241 Spring St, San Diego, CA 92101"],
+      ["Mark Miller",      "9402 Washington Ave, Kansas City, MO 64108"],
+    ];
+
+    const tbody = document.getElementById('tbody');
+    const search = document.getElementById('search');
+    const visibleCount = document.getElementById('visible-count');
+    const totalCount = document.getElementById('total-count');
+    const headers = document.querySelectorAll('thead th');
+
+    let sortCol = -1;
+    let sortDir = 1;
+    let rows = DATA.map(r => [...r]);
+
+    totalCount.textContent = DATA.length;
+
+    function render() {
+      const q = search.value.trim().toLowerCase();
+      const filtered = q
+        ? rows.filter(r => r.some(c => c.toLowerCase().includes(q)))
+        : rows;
+
+      tbody.innerHTML = filtered.length
+        ? filtered.map(r => `<tr><td>${esc(r[0])}</td><td>${esc(r[1])}</td></tr>`).join('')
+        : '<tr><td colspan="2" class="empty">No matches</td></tr>';
+
+      visibleCount.textContent = filtered.length;
+
+      headers.forEach((h, i) => {
+        h.classList.toggle('sorted', i === sortCol);
+        const arrow = h.querySelector('.arrow');
+        if (i === sortCol) arrow.textContent = sortDir > 0 ? '▲' : '▼';
+        else arrow.textContent = '▲▼';
+      });
+    }
+
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, c => ({
+        '&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'
+      }[c]));
+    }
+
+    search.addEventListener('input', render);
+
+    headers.forEach((h, i) => {
+      h.addEventListener('click', () => {
+        if (sortCol === i) sortDir *= -1;
+        else { sortCol = i; sortDir = 1; }
+        rows.sort((a, b) => a[i].localeCompare(b[i]) * sortDir);
+        render();
+      });
+    });
+
+    document.getElementById('csv-btn').addEventListener('click', () => {
+      const csv = 'Name,Address\n' +
+        rows.map(r => r.map(c => `"${c.replace(/"/g, '""')}"`).join(',')).join('\n');
+      const blob = new Blob([csv], { type: 'text/csv' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'people.csv';
+      a.click();
+      URL.revokeObjectURL(url);
+    });
+
+    render();
+  </script>
+</body>
+</html>
