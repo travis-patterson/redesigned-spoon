@@ -1,0 +1,14 @@
+{
+  "hooks": {
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "(cd /Users/travispatterson/Desktop/ClaudeTest1 && [ -n \"$(git status --porcelain)\" ] && git add -A && git commit -m \"auto: changes from Claude Code session\" && git push origin main) 2>/dev/null || true"
+          }
+        ]
+      }
+    ]
+  }
+}
