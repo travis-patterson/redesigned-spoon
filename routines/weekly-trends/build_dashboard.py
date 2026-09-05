@@ -1,0 +1,260 @@
+#!/usr/bin/env python3
+"""Render the GTM weekly trend dashboard as a self-contained HTML file.
+
+Input is a series.json written by the routine:
+
+  {"as_of": "8/31/2026",
+   "source_url": "https://docs.google.com/...",
+   "weeks": ["2026-03-23", ...],            # week start dates, chronological
+   "partial_last": true,                    # final point is a week in progress
+   "charts": [{"title": ..., "unit": "usd"|"count", "note": ...,
+               "series": [{"name": ..., "values": [...]}]}]}
+
+Usage: python3 build_dashboard.py series.json dashboard.html
+
+Line charts only: every chart here is a measure over time. Each chart carries its
+own y-scale. Never put two units on one plot - a dual axis is the single most
+common way to make a trend chart lie.
+"""
+import json
+import sys
+
+# Categorical slots 1-3, validated all-pairs in both modes with
+# scripts/validate_palette.js from the dataviz skill. Light mode WARNs on
+# contrast for aqua and yellow, which obligates the direct labels and the table
+# view below; both ship. Orange is deliberately not used.
+LIGHT = ["#2a78d6", "#1baf7a", "#eda100"]
+DARK = ["#3987e5", "#199e70", "#c98500"]
+
+W, H = 720, 260
+PAD_L, PAD_R, PAD_T, PAD_B = 64, 116, 18, 34
+
+
+def fmt(v, unit):
+    if v is None:
+        return "n/a"
+    if unit == "usd":
+        if abs(v) >= 1_000_000:
+            return "$%.2fM" % (v / 1_000_000)
+        if abs(v) >= 1_000:
+            return "$%.0fk" % (v / 1_000)
+        return "$%.0f" % v
+    return "{:,.0f}".format(v)
+
+
+def nice_max(v):
+    if v <= 0:
+        return 1.0
+    import math
+    exp = math.floor(math.log10(v))
+    frac = v / (10 ** exp)
+    # Fine-grained steps: a coarse ladder rounds 6.0M up to 10M and throws away
+    # 40% of the plot height, which flattens every other week in the series.
+    step = next(s for s in (1, 1.25, 1.5, 2, 2.5, 3, 4, 5, 6, 8, 10) if frac <= s)
+    return step * (10 ** exp)
+
+
+def chart_svg(idx, chart, weeks):
+    unit = chart.get("unit", "count")
+    series = chart["series"]
+    n = len(weeks)
+    vals = [v for s in series for v in s["values"] if v is not None]
+    top = nice_max(max(vals) if vals else 1)
+
+    def x(i):
+        return PAD_L if n <= 1 else PAD_L + i * (W - PAD_L - PAD_R) / (n - 1)
+
+    def y(v):
+        return H - PAD_B - (v / top) * (H - PAD_T - PAD_B)
+
+    parts = []
+    # Recessive gridlines and y labels. Four bands is enough to read a level.
+    for k in range(5):
+        v = top * k / 4
+        yy = y(v)
+        parts.append('<line class="grid" x1="%.1f" y1="%.1f" x2="%.1f" y2="%.1f"/>'
+                     % (PAD_L, yy, W - PAD_R, yy))
+        parts.append('<text class="ylab" x="%.1f" y="%.1f">%s</text>'
+                     % (PAD_L - 8, yy + 4, fmt(v, unit)))
+
+    # x labels: roughly six, always including the last week.
+    stride = max(1, n // 6)
+    for i in range(n - 1, -1, -stride):
+        parts.append('<text class="xlab" x="%.1f" y="%.1f">%s</text>'
+                     % (x(i), H - PAD_B + 18, weeks[i]))
+
+    ends = []
+    for si, s in enumerate(series):
+        colour = "var(--s%d)" % (si + 1)
+        pts = [(x(i), y(v)) for i, v in enumerate(s["values"]) if v is not None]
+        if not pts:
+            continue
+        d = "M" + " L".join("%.1f %.1f" % p for p in pts)
+        parts.append('<path class="ln" d="%s" stroke="%s"/>' % (d, colour))
+        # A marker only on the last point: a dot on every point is noise.
+        lx, ly = pts[-1]
+        parts.append('<circle class="pt" cx="%.1f" cy="%.1f" r="4.5" fill="%s"/>'
+                     % (lx, ly, colour))
+        ends.append([ly, lx, colour, s["name"]])
+
+    # Direct labels, which are also the relief the light-mode contrast WARN
+    # requires. Series that end at similar values would otherwise print on top of
+    # each other, so push them apart vertically before drawing.
+    if len(series) > 1:
+        ends.sort()
+        gap = 13.0
+        for i in range(1, len(ends)):
+            if ends[i][0] - ends[i - 1][0] < gap:
+                ends[i][0] = ends[i - 1][0] + gap
+        # Keep the label stack inside the plot band so it never collides with the
+        # x-axis tick labels below it.
+        overflow = ends[-1][0] - (H - PAD_B) if ends else 0
+        if overflow > 0:
+            for e in ends:
+                e[0] -= overflow
+        for ly, lx, colour, name in ends:
+            parts.append('<text class="dlab" x="%.1f" y="%.1f" fill="%s">%s</text>'
+                         % (lx + 10, ly + 4, colour, name))
+
+    # Hover layer: one full-height band per week driving a shared crosshair.
+    for i, wk in enumerate(weeks):
+        band = (W - PAD_L - PAD_R) / max(1, n - 1)
+        readout = " · ".join("%s %s" % (s["name"], fmt(s["values"][i], unit))
+                             for s in series)
+        parts.append('<rect class="hit" x="%.1f" y="%d" width="%.1f" height="%d" '
+                     'data-label="%s — %s"/>'
+                     % (x(i) - band / 2, PAD_T, band, H - PAD_T - PAD_B, wk, readout))
+
+    legend = ""
+    if len(series) > 1:
+        chips = "".join(
+            '<span class="chip"><i style="background:var(--s%d)"></i>%s</span>'
+            % (si + 1, s["name"]) for si, s in enumerate(series))
+        legend = '<div class="legend">%s</div>' % chips
+
+    rows = "".join(
+        "<tr><th>%s</th>%s</tr>" % (wk, "".join(
+            "<td>%s</td>" % fmt(s["values"][i], unit) for s in series))
+        for i, wk in enumerate(weeks))
+    head = "".join("<th>%s</th>" % s["name"] for s in series)
+    table = ('<details class="tbl"><summary>Data table</summary>'
+             '<div class="scroll"><table><thead><tr><th>Week</th>%s</tr></thead>'
+             '<tbody>%s</tbody></table></div></details>' % (head, rows))
+
+    note = '<p class="note">%s</p>' % chart["note"] if chart.get("note") else ""
+    return ('<section class="card"><h2>%s</h2>%s%s'
+            '<div class="plot"><svg viewBox="0 0 %d %d" role="img" '
+            'aria-label="%s"><g>%s</g></svg><div class="tip" hidden></div></div>%s</section>'
+            % (chart["title"], note, legend, W, H, chart["title"],
+               "".join(parts), table))
+
+
+def main(series_path, out_path):
+    d = json.load(open(series_path))
+    weeks, charts = d["weeks"], d["charts"]
+
+    # Tiles read the last COMPLETE week. A week-over-week delta computed against a
+    # week still in progress always shows a fake collapse.
+    off = 2 if d.get("partial_last") else 1
+    tiles = []
+    for c in charts:
+        for s in c["series"]:
+            vals = s["values"]
+            if len(vals) < off + 1:
+                continue
+            cur, prev = vals[-off], vals[-off - 1]
+            label = s["name"] if len(c["series"]) > 1 else c["title"]
+            delta = ""
+            if cur is not None and prev:
+                pct = (cur - prev) / prev * 100
+                delta = '<span class="d">%+.0f%% w/w</span>' % pct
+            tiles.append('<div class="tile"><span class="k">%s</span>'
+                         '<span class="v">%s</span>%s</div>'
+                         % (label, fmt(cur, c.get("unit", "count")), delta))
+
+    css = """
+:root{color-scheme:light;--bg:#f6f6f4;--surface:#fcfcfb;--line:#e4e3de;
+--ink:#0b0b0b;--ink2:#52514e;--ink3:#807e77;--s1:%s;--s2:%s;--s3:%s}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+--bg:#111110;--surface:#1a1a19;--line:#2f2f2c;--ink:#fff;--ink2:#c3c2b7;
+--ink3:#8f8e85;--s1:%s;--s2:%s;--s3:%s}}
+:root[data-theme="dark"]{--bg:#111110;--surface:#1a1a19;--line:#2f2f2c;
+--ink:#fff;--ink2:#c3c2b7;--ink3:#8f8e85;--s1:%s;--s2:%s;--s3:%s}
+body{background:var(--bg);color:var(--ink);font:14px/1.5 -apple-system,
+BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;margin:0;padding:28px}
+.wrap{max-width:860px;margin:0 auto}
+h1{font-size:20px;margin:0 0 4px}
+.sub{color:var(--ink2);margin:0 0 22px;font-size:13px}
+.tiles{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));
+gap:10px;margin-bottom:22px}
+.tile{background:var(--surface);border:1px solid var(--line);border-radius:10px;
+padding:12px 14px;display:flex;flex-direction:column;gap:2px}
+.tile .k{font-size:11px;color:var(--ink3);text-transform:uppercase;
+letter-spacing:.04em}
+.tile .v{font-size:24px;font-weight:600;font-variant-numeric:tabular-nums}
+.tile .d{font-size:12px;color:var(--ink2);font-variant-numeric:tabular-nums}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:12px;
+padding:16px 18px;margin-bottom:16px}
+h2{font-size:14px;margin:0 0 2px}
+.note{color:var(--ink3);font-size:12px;margin:0 0 10px}
+.legend{display:flex;gap:14px;flex-wrap:wrap;margin:6px 0 4px;font-size:12px;
+color:var(--ink2)}
+.chip{display:inline-flex;align-items:center;gap:6px}
+.chip i{width:10px;height:10px;border-radius:3px;display:inline-block}
+.plot{position:relative;overflow-x:auto}
+svg{display:block;width:100%%;height:auto;min-width:560px}
+.grid{stroke:var(--line);stroke-width:1}
+.ln{fill:none;stroke-width:2;stroke-linejoin:round;stroke-linecap:round}
+.pt{stroke:var(--surface);stroke-width:2}
+.ylab{fill:var(--ink3);font-size:10px;text-anchor:end;
+font-variant-numeric:tabular-nums}
+.xlab{fill:var(--ink3);font-size:10px;text-anchor:middle}
+.dlab{font-size:11px;font-weight:600}
+.hit{fill:transparent}
+.hit:hover{fill:var(--ink);fill-opacity:.05}
+.tip{position:absolute;top:6px;left:6px;background:var(--ink);color:var(--bg);
+font-size:12px;padding:5px 9px;border-radius:6px;pointer-events:none;
+max-width:92%%}
+.tbl{margin-top:10px}
+summary{cursor:pointer;color:var(--ink2);font-size:12px}
+.scroll{overflow-x:auto;margin-top:8px}
+table{border-collapse:collapse;font-size:12px;
+font-variant-numeric:tabular-nums}
+th,td{border-bottom:1px solid var(--line);padding:4px 10px;text-align:right;
+white-space:nowrap}
+thead th{color:var(--ink3);font-weight:500}
+tbody th{text-align:left;font-weight:400;color:var(--ink2)}
+a{color:var(--s1)}
+""" % tuple(LIGHT + DARK + DARK)
+
+    js = """
+document.querySelectorAll('.plot').forEach(function(p){
+  var tip=p.querySelector('.tip');
+  p.querySelectorAll('.hit').forEach(function(h){
+    h.addEventListener('mouseenter',function(){
+      tip.textContent=h.getAttribute('data-label');tip.hidden=false;});
+  });
+  p.addEventListener('mouseleave',function(){tip.hidden=true;});
+});
+"""
+
+    partial = ("<p class=\"sub\">Tiles show the last complete week. The final point on each chart is a week still in progress.</p>" if d.get("partial_last") else "")
+    body = ("<div class=\"wrap\"><h1>GTM weekly trends</h1>"
+            "<p class=\"sub\">%d weeks through %s. Source: "
+            "<a href=\"%s\">GTM Weekly Metrics, WEEKLY tab</a>.</p>%s"
+            "<div class=\"tiles\">%s</div>%s</div>"
+            % (len(weeks), d["as_of"], d.get("source_url", "#"), partial,
+               "".join(tiles),
+               "".join(chart_svg(i, c, weeks) for i, c in enumerate(charts))))
+
+    open(out_path, "w").write(
+        "<!doctype html><html><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"
+        "<title>GTM weekly trends</title><style>%s</style></head><body>%s"
+        "<script>%s</script></body></html>" % (css, body, js))
+    print("wrote %s: %d charts, %d weeks through %s"
+          % (out_path, len(charts), len(weeks), d["as_of"]))
+
+
+if __name__ == "__main__":
+    main(*sys.argv[1:3])
