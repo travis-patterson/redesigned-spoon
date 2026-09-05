@@ -1,0 +1,306 @@
+# ROUTINE: renewal-radar
+# Schedule: 0 12 * * 1  (Mondays 08:00 ET during EDT, 07:00 ET during EST)
+# Runtime: Claude + Agent Handler (Salesforce, Gmail). Read-only against Salesforce.
+
+GOAL
+Rank every customer account with a contract event in the next 90 days by ARR at
+risk, classify each as expansion, flat renewal, or retention risk, and name the
+three to five accounts that need a CRO touch this week. Deliver as one self-email.
+
+HARD GUARDRAILS  (violate any one of these -> stop and report)
+- Salesforce is READ ONLY. Permitted: run_soql_query and the salesforce list/get/
+  search tools. Forbidden: any create, update, upsert or delete against any
+  Salesforce object, including Tasks, Notes and Chatter.
+- Gmail: the only permitted write is a single message to travis@merge.dev.
+  Forbidden: sending to any other recipient, any delete, trash, spam or label
+  operation, and modifying drafts not created in this run.
+- This report contains ARR, discount and at-risk figures per account. Do not post
+  it to Slack, do not write it to a shared Drive folder, and do not include it in
+  anything customer-facing. Self-email only.
+- Do not open a full contract brief for any account in this run. This routine
+  triages and names candidates; the /contract skill does the deep work on demand.
+
+TOOLING
+- Every Salesforce and Gmail call goes through Agent Handler. Load exact schemas
+  first: tool_search("agent handler salesforce soql query"). Use the field names
+  the schema returns; do not guess parameter names.
+- Fall back to a native connector only if an Agent Handler call fails twice. If
+  you fall back, say so in the final report.
+
+STEP 1 - PULL THE RENEWAL BOOK
+  Agent Handler:salesforce__run_soql_query
+
+    SELECT Id, Name, Current_Subscription_End_Date__c, Account_Current_Renewal_Date__c,
+           Active_ARR_New__c, Contracted_Linked_Accounts__c, Owner.Name
+    FROM Account
+    WHERE Type = 'Customer'
+      AND Current_Subscription_End_Date__c >= TODAY
+      AND Current_Subscription_End_Date__c <= NEXT_N_DAYS:90
+    ORDER BY Current_Subscription_End_Date__c ASC
+
+Field notes, all verified against the org:
+- Use `Active_ARR_New__c` for ARR. `Total_ARR__c` is zero on every customer record
+  and is not a usable field.
+- `Current_Subscription_End_Date__c` is canonical. `Renewal_Date__c` is that date
+  plus one day by convention, so do not treat the two as disagreeing.
+- `Account_Current_Renewal_Date__c` usually matches but sometimes does not. Where
+  it differs from `Current_Subscription_End_Date__c` by more than 3 days, list the
+  account under DATE DISAGREEMENTS with both values. Do not pick a winner.
+- `Contracted_Linked_Accounts__c` is the commit, and it is dirty: zero and negative
+  values both occur in the live book. The scorer flags these rather than dividing
+  by them.
+
+Write the result to `accounts.json` as a list of objects with exactly these keys:
+`id`, `name`, `end` (YYYY-MM-DD), `arr`, `commit`, `owner`.
+
+STEP 2 - PULL UTILIZATION
+Two queries, both scoped by a semi-join so no account id list has to be pasted.
+
+Snapshot history:
+
+    SELECT Account__c, Date_Month_of_Snapshot__c, Number_of_Linked_Accounts__c,
+           Number_of_Paused_Linked_Accounts__c, Number_of_Relink_Needed_Linked_Accounts__c
+    FROM Monthly_Account_Utilization_Snapshot__c
+    WHERE Account__c IN (SELECT Id FROM Account WHERE Type = 'Customer'
+          AND Current_Subscription_End_Date__c >= TODAY
+          AND Current_Subscription_End_Date__c <= NEXT_N_DAYS:90)
+      AND Date_Month_of_Snapshot__c >= LAST_N_MONTHS:7
+    ORDER BY Account__c, Date_Month_of_Snapshot__c ASC
+
+Use `>= LAST_N_MONTHS:7`, not `= LAST_N_MONTHS:7`. The equality form excludes the
+current month and silently drops the freshest snapshot from every account.
+
+Coverage census, which separates "never instrumented" from "instrumentation stopped":
+
+    SELECT Account__c, COUNT(Id) snaps, MAX(Date_Month_of_Snapshot__c) latest
+    FROM Monthly_Account_Utilization_Snapshot__c
+    WHERE Account__c IN (SELECT Id FROM Account WHERE Type = 'Customer'
+          AND Current_Subscription_End_Date__c >= TODAY
+          AND Current_Subscription_End_Date__c <= NEXT_N_DAYS:90)
+    GROUP BY Account__c
+
+The snapshot query returns 400+ rows and will exceed the inline tool-result limit.
+When that happens the harness saves the full result to a file and gives you the
+path. Use that path directly as `snapshots.json`; do not try to read it into
+context or re-run the query in smaller pieces. Save the coverage result as
+`coverage.json` in the same `{"records": [...]}` shape.
+
+`Number_of_Linked_Accounts__c` is the billable in-use count. Paused and
+relink-needed are separate degraded states, not subsets of it. Never use
+`Snapshot_Contracted_Linked_Accounts__c` or `Snapshot_utilization__c`: both are
+known-wrong in this org.
+
+STEP 3 - SCORE
+Write the script below to `score.py` verbatim and run it:
+
+    python3 score.py accounts.json snapshots.json coverage.json
+
+Do not rank, classify or compute at-risk figures yourself. The whole point of the
+script is that the same book produces the same ranking every week, so a change in
+the report means the business changed, not that the model read the table
+differently. If the script errors, fix the input files, not the thresholds.
+
+```python
+#!/usr/bin/env python3
+"""Rank a 90-day renewal book by ARR at risk.
+
+Deterministic scoring so the same book produces the same ranking week to week.
+Reads three files written by the routine from Salesforce query results:
+
+  accounts.json   [{id,name,end,arr,commit,owner}, ...]      the renewal book
+  snapshots.json  raw SOQL result for the utilization snapshots
+  coverage.json   raw SOQL result for the per-account snapshot census
+                  (COUNT(Id), MAX(Date_Month_of_Snapshot__c) grouped by account)
+
+Usage: python3 score.py accounts.json snapshots.json coverage.json
+"""
+import json
+import sys
+import datetime
+
+RISING, DECLINING = 0.05, -0.05
+OVERAGE = 1.10          # above this, overage outranks trend when setting posture
+MIN_RATEABLE_COMMIT = 5  # below this a per-unit rate is noise, not a price
+STALE_DAYS = 62
+TREND_MONTHS = 3
+
+
+def load(path):
+    with open(path) as fh:
+        return json.load(fh)
+
+
+def records(path):
+    return load(path).get("records", [])
+
+
+def main(accounts_path, snapshots_path, coverage_path):
+    today = datetime.date.today()
+    accounts = load(accounts_path)
+
+    by_account = {}
+    for r in records(snapshots_path):
+        by_account.setdefault(r["Account__c"], []).append(r)
+    for rows in by_account.values():
+        rows.sort(key=lambda r: r["Date_Month_of_Snapshot__c"])
+
+    # Distinguish "never instrumented" from "instrumentation stopped". Both are
+    # blind spots but they have different owners and different fixes.
+    coverage = {r["Account__c"]: r for r in records(coverage_path)}
+
+    rows, frozen, instrumented = [], 0, 0
+
+    for a in accounts:
+        end = datetime.date(*map(int, a["end"].split("-")))
+        arr, commit = float(a["arr"]), float(a["commit"])
+        row = dict(name=a["name"], owner=a["owner"], end=a["end"],
+                   days=(end - today).days, arr=arr, commit=commit,
+                   latest=None, util=None, trend=None, posture=None,
+                   risk=0.0, shelf=0.0, recover=0, flags=[])
+        snaps = by_account.get(a["id"], [])
+
+        if not snaps:
+            cov = coverage.get(a["id"])
+            if cov and cov.get("snaps"):
+                row["flags"].append("snapshots stopped %s" % cov.get("latest"))
+            else:
+                row["flags"].append("never instrumented, zero snapshots on record")
+            row.update(posture="BLIND", risk=arr)
+            rows.append(row)
+            continue
+
+        instrumented += 1
+        latest = snaps[-1]
+        in_use = latest["Number_of_Linked_Accounts__c"] or 0
+        paused = latest["Number_of_Paused_Linked_Accounts__c"] or 0
+        relink = latest["Number_of_Relink_Needed_Linked_Accounts__c"] or 0
+
+        # Direction comes from the trailing 3 months, not the full window. A
+        # 7-month baseline often lands mid-onboarding, so the whole book reads
+        # as growth that actually finished months ago.
+        window = snaps[-(TREND_MONTHS + 1):]
+        base = window[0]["Number_of_Linked_Accounts__c"] or 0
+        trend = ((in_use - base) / base) if base else None
+        direction = ("rising" if (trend or 0) > RISING else
+                     "declining" if (trend or 0) < DECLINING else "flat")
+
+        util = (in_use / commit) if commit > 0 else None
+        if commit <= 0:
+            row["flags"].append("contracted units = %.0f, utilization not computable" % commit)
+
+        month = datetime.date(*map(int, latest["Date_Month_of_Snapshot__c"].split("-")))
+        if (today - month).days > STALE_DAYS:
+            row["flags"].append("latest snapshot %s, stale" % latest["Date_Month_of_Snapshot__c"])
+
+        paused_series = [s["Number_of_Paused_Linked_Accounts__c"] for s in snaps]
+        if len(paused_series) >= 4 and len(set(paused_series[-4:])) == 1 and paused_series[-1]:
+            frozen += 1
+
+        if util is None:
+            posture = "UNKNOWN"
+        elif util > OVERAGE:
+            posture = "Expansion"
+        elif util < 0.60:
+            posture = "At risk" if direction == "declining" else "Retention"
+        elif util <= 0.85:
+            posture = "Growth" if direction == "rising" else "Hold"
+        else:
+            posture = "Expansion" if direction == "rising" else "Hold"
+
+        rate = arr / commit if commit > 0 else 0
+        shelf = max(0.0, (commit - in_use) * rate) if commit > 0 else 0.0
+
+        if posture in ("At risk", "Retention", "UNKNOWN"):
+            risk = arr                      # revenue that may not renew
+        elif posture == "Expansion":
+            if commit < MIN_RATEABLE_COMMIT:
+                risk = 0.0
+                row["flags"].append(
+                    "commit of %.0f units too small to derive a rate, upside not sized" % commit)
+            else:
+                risk = max(0.0, (in_use - commit) * rate)   # upside forgone
+        else:
+            risk = 0.0
+
+        row.update(latest=in_use, util=util, trend=trend, posture=posture,
+                   risk=risk, shelf=shelf, recover=paused + relink)
+        rows.append(row)
+
+    rows.sort(key=lambda r: (-r["risk"], r["days"]))
+
+    head = ("%-30s%-15s%-12s%4s%9s%6s%6s%6s%7s  %-10s%9s" %
+            ("ACCOUNT", "OWNER", "RENEWS", "D", "ARR", "CMT", "USE", "UTIL", "3MO",
+             "POSTURE", "AT RISK"))
+    out = [head, "-" * len(head)]
+    for r in rows:
+        out.append("%-30s%-15s%-12s%4d%9s%6.0f%6.0f%6s%7s  %-10s%9s" % (
+            r["name"][:29], r["owner"][:14], r["end"], r["days"],
+            format(r["arr"], ",.0f"), r["commit"], r["latest"] or 0,
+            ("%.0f%%" % (r["util"] * 100)) if r["util"] is not None else "-",
+            ("%+.0f%%" % (r["trend"] * 100)) if r["trend"] is not None else "-",
+            r["posture"], format(r["risk"], ",.0f")))
+
+    flagged = [r for r in rows if r["risk"] > 0]
+    out += ["",
+            "ARR up for renewal in 90d  $%12s  (%d accounts)" % (
+                format(sum(r["arr"] for r in rows), ",.0f"), len(rows)),
+            "Flagged needing attention  $%12s  (%d accounts)" % (
+                format(sum(r["risk"] for r in flagged), ",.0f"), len(flagged)),
+            "Shelfware in the book      $%12s" % format(sum(r["shelf"] for r in rows), ",.0f")]
+
+    if frozen:
+        out += ["", "SYSTEMIC: paused-unit count frozen for 4+ months on %d of %d instrumented "
+                    "accounts. Treat the field as unreliable org-wide; do not quote recoverable-unit "
+                    "figures to a customer." % (frozen, instrumented)]
+
+    defects = [(r["name"], f) for r in rows for f in r["flags"]]
+    if defects:
+        out += ["", "PER-ACCOUNT DEFECTS"]
+        out += ["  %s: %s" % d for d in defects]
+
+    print("\n".join(out))
+    with open("radar.json", "w") as fh:
+        json.dump(rows, fh, indent=2)
+
+
+if __name__ == "__main__":
+    main(*sys.argv[1:4])
+```
+
+STEP 4 - COMPOSE
+The script prints the ranked table and writes `radar.json`. Build the email from
+its output. Do not recompute any number.
+
+    Subject: Renewal radar, {N} accounts, ${total} in 90 days
+
+    ## This week
+    Three to five sentences. Lead with the largest at-risk line and what makes it
+    at risk. Name the accounts renewing inside 30 days that are not yet in a good
+    posture. Do not restate the table.
+
+    ## Run /contract on these
+    The top 3 to 5 rows by AT RISK, each one line: account, ARR, renewal date,
+    posture, and the single reason it made the list.
+
+    ## Full book
+    The script's table, verbatim, in a <pre> block.
+
+    ## Data defects
+    The script's SYSTEMIC line and PER-ACCOUNT DEFECTS list, plus any DATE
+    DISAGREEMENTS from step 1. These have owners: a blind account is a Sales Ops
+    instrumentation gap, not a rep problem, and saying so keeps the list credible.
+
+Style: tight, no preamble, no em dashes, no emojis, short declarative sentences,
+no sign-off. A blind account outranks a merely under-consuming one of the same
+size, because there is no basis for a renewal conversation at all.
+
+STEP 5 - DELIVER
+Agent Handler:gmail__create_draft, then gmail__send_message, to travis@merge.dev
+only, HTML body. If send fails, leave the draft and say so.
+
+STEP 6 - COMPLETION GATE
+Before reporting, verify: rows in the script's table == accounts in `accounts.json`.
+If they do not reconcile, the semi-join and the account query disagreed. Say so
+rather than reporting a partial book. Close with:
+"{N} accounts scored, ${total} in the 90-day book, ${risk} flagged. Salesforce
+unchanged, one self-email sent."
