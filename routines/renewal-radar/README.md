@@ -77,3 +77,16 @@ use, down 43% over three months.
 The paused-unit count is frozen for 4 or more months on 33 of 56 instrumented
 accounts, so recoverable-unit figures are not quotable to a customer until Sales
 Ops fixes the field.
+
+## Deployment
+
+Trigger `trig_01DbXmdnRpdWNjxEFzBmtyJs`, `0 12 * * 1`, fresh session per fire,
+push notification on completion.
+
+**The trigger was created without MCP connectors attached.** Routines created
+through the MCP API can only inherit connectors the calling session itself holds
+as passable grants, and this org does not permit setting them on the API call.
+Until Agent Handler and Gmail are attached to this routine in the claude.ai
+Routines UI, every fire will fail at step 1 with no Salesforce tools available.
+The other five routines on this account have their connectors populated because
+they were created through that UI.
