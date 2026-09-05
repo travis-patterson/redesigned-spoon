@@ -1,27 +1,30 @@
 # ROUTINE: weekly-trend-dashboard
 # Schedule: 0 16 * * 5  (Fridays 12:00 ET during EDT)
-# Runtime: Claude + Agent Handler (Google Sheets, Drive, Gmail). Source sheet is read-only.
+# Runtime: Claude + Agent Handler (Google Sheets, Drive, Slack). Source sheet is read-only.
 
 GOAL
 Chart the weekly GTM trends from the WEEKLY tab of the GTM Weekly Metrics sheet,
-publish the dashboard to Drive, and email the link with a short read of what moved.
+publish the dashboard to Drive, and post the link to Slack with a short read of what moved.
 
 HARD GUARDRAILS  (violate any one of these -> stop and report)
 - NEVER call the Artifact tool. It requires an interactive approval that nobody is
   present to give on a scheduled run, and the routine will hang at the prompt
   instead of failing. This is what broke the previous version of this routine.
   The same applies to any other tool that opens a confirmation: if a tool asks,
-  the run is already wrong. Deliver through Drive and Gmail only.
+  the run is already wrong. Deliver through Drive and Slack only.
 - The source spreadsheet is READ ONLY. No update_values, append_values,
   batch_update, add_sheet, or any other write to spreadsheet
   1FCFjss1No-3f2Su93ahKcIIbzzQREX6nv4AjgHktadk.
 - Do not set sharing permissions on the Drive file and do not publish it to the
   web. It lands in the owner's own Drive and inherits default access.
-- Gmail: the only permitted write is a single message to travis@merge.dev.
+- Slack: the only permitted write is posting to the DIRECT MESSAGE with
+  travis@merge.dev, resolved by email lookup at run time. Never post to a
+  channel, public or private, however well named. Never @-mention anyone.
 
 TOOLING
-- Sheets, Drive and Gmail all go through Agent Handler. Load exact schemas first:
-  tool_search("agent handler google sheets get values drive create file gmail send")
+- Sheets, Drive and Slack all go through Agent Handler. Load exact schemas first:
+  tool_search("agent handler google sheets get values drive create file slack
+  post message lookup user by email")
 - Fall back to a native connector only if an Agent Handler call fails twice, and
   say so in the final report.
 
@@ -114,25 +117,40 @@ Name it `GTM Weekly Trends [YYYY.MM.DD].html` using the as-of date. Take the
 `viewUrl` from the response. Verify the returned `fileSize` matches the file on
 disk; a mismatch means the upload truncated and should be redone.
 
-STEP 6 - EMAIL
-Send one message to travis@merge.dev.
+STEP 6 - DELIVER TO SLACK
+Slack renders no HTML and a message cannot display an image on its own, so the
+dashboard cannot be posted directly. Generate the text version, which carries
+block-character sparklines that survive in a code fence:
 
-    Subject: GTM weekly trends, week of {as-of}
+    python3 build_dashboard.py series.json slack.txt --slack "<drive viewUrl>"
 
-    Four to six sentences, no preamble. What moved this week against last
-    COMPLETE week, which segment drove it, and anything that looks like a data
-    problem rather than a business event. Then the Drive link.
+Resolve the DM target first:
 
-    Then a small HTML table: metric, last complete week, prior week, change.
+    Agent Handler:slack__lookup_user_by_email   email: travis@merge.dev
 
-Style: tight, no em dashes, no emojis, short declarative sentences, no sign-off.
-Do not describe the charts. The reader can open them.
+Take the user id from the response and pass it as `channel` on post_message.
+Posting to a user id opens the direct message with that person. Post with
+mrkdwn true and unfurl_links false.
 
-Note in the email that the final point on each chart is a week in progress, so
-the visible drop at the right edge is not a real decline.
+If lookup_user_by_email fails, STOP and report. Do not substitute a channel,
+and do not guess an id. If Slack returns reauth_required, say so plainly: the
+Agent Handler Slack connection needs to be reauthorized and no amount of
+retrying will fix it.
+
+Post one message: a two to four sentence read of what moved, then a blank line,
+then the contents of `slack.txt` verbatim. The generated text already contains
+the numbers, the week-over-week changes, the sparklines and the Drive link, so
+the read should say what happened, not repeat the figures.
+
+Call out anything that looks like a data problem rather than a business event.
+
+Style: tight, no preamble, no em dashes, no emojis, short declarative sentences,
+no sign-off. Do not describe the charts. The reader can open them.
+
+Do not send email. Slack is the only delivery channel for this routine.
 
 STEP 7 - COMPLETION GATE
 Verify: the number of weeks charted equals the number of columns kept in step 1,
 and the step 3 reconciliation passed for every week. Close with:
 "{N} weeks charted through {as-of}. Sheet unchanged, dashboard in Drive, one
-email sent."
+Slack DM sent."

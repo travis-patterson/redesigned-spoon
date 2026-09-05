@@ -22,6 +22,10 @@ STALE_DAYS = 62
 TREND_MONTHS = 3
 
 
+def money(v):
+    return "$%s" % format(v, ",.0f")
+
+
 def load(path):
     with open(path) as fh:
         return json.load(fh)
@@ -158,6 +162,51 @@ def main(accounts_path, snapshots_path, coverage_path):
     print("\n".join(out))
     with open("radar.json", "w") as fh:
         json.dump(rows, fh, indent=2)
+
+    # Slack delivery. Slack renders no HTML and silently truncates long text, so
+    # the report is split: a lead message that stands on its own, then the full
+    # table in chunks small enough to post as threaded replies.
+    lead = ["*Renewal radar* \u2014 %s in the 90-day book across %d accounts, "
+            "%s flagged." % (money(sum(r["arr"] for r in rows)), len(rows),
+                             money(sum(r["risk"] for r in flagged)))]
+    blind = [r for r in rows if r["posture"] == "BLIND"]
+    if blind:
+        lead.append("%s renews with no usage data at all: %s."
+                    % (money(sum(r["arr"] for r in blind)),
+                       ", ".join(r["name"] for r in blind)))
+    lead.append("")
+    lead.append("Run /contract on these:")
+    for r in flagged[:5]:
+        # Show the at-risk figure, not ARR: at-risk is the sort key, and on an
+        # expansion row it is upside forgone rather than the account's ARR, so
+        # printing ARR here makes the ordering look wrong.
+        lead.append("  \u2022 *%s* \u2014 %s at risk, %s ARR, renews %s (%dd), %s"
+                    % (r["name"], money(r["risk"]), money(r["arr"]), r["end"],
+                       r["days"], r["posture"]))
+    if frozen:
+        lead.append("")
+        lead.append("_Paused-unit field is frozen on %d of %d instrumented "
+                    "accounts; recoverable-unit figures are not quotable._"
+                    % (frozen, instrumented))
+    with open("slack-lead.txt", "w") as fh:
+        fh.write("\n".join(lead))
+
+    # Chunk the monospace table. 3500 chars keeps each reply clear of Slack's
+    # truncation point once the code fence is added.
+    chunks, cur = [], []
+    size = 0
+    for line in out:
+        if size + len(line) + 1 > 3500 and cur:
+            chunks.append("\n".join(cur))
+            cur, size = [head, "-" * len(head)], len(head) * 2
+        cur.append(line)
+        size += len(line) + 1
+    if cur:
+        chunks.append("\n".join(cur))
+    for i, ch in enumerate(chunks):
+        with open("slack-table-%02d.txt" % (i + 1), "w") as fh:
+            fh.write("```\n%s\n```" % ch)
+    print("slack: 1 lead + %d table chunk(s)" % len(chunks))
 
 
 if __name__ == "__main__":

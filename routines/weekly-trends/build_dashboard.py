@@ -149,6 +149,51 @@ def chart_svg(idx, chart, weeks):
                "".join(parts), table))
 
 
+BLOCKS = "\u2581\u2582\u2583\u2584\u2585\u2586\u2587\u2588"
+
+
+SPARK_WEEKS = 26
+
+
+def spark(values):
+    """Block-character sparkline. Slack renders no SVG and cannot show an image
+    from a message alone, so the trend has to survive as text in a code fence.
+
+    Trailing 26 weeks rather than the full 52: a single outlier early in the
+    window flattens every later bar to the floor and the shape says nothing."""
+    values = values[-SPARK_WEEKS:]
+    vals = [v for v in values if v is not None]
+    if not vals:
+        return ""
+    lo, hi = min(vals), max(vals)
+    span = (hi - lo) or 1
+    return "".join(BLOCKS[min(7, int((v - lo) / span * 7))] if v is not None
+                   else " " for v in values)
+
+
+def write_slack(d, out_path, drive_url):
+    weeks, charts = d["weeks"], d["charts"]
+    off = 2 if d.get("partial_last") else 1
+    lines = ["*GTM weekly trends* \u2014 week of %s" % d["as_of"], ""]
+    for c in charts:
+        unit = c.get("unit", "count")
+        lines.append("*%s*" % c["title"])
+        body = []
+        for s in c["series"]:
+            v = s["values"]
+            cur, prev = v[-off], v[-off - 1]
+            chg = ("%+.0f%%" % ((cur - prev) / prev * 100)) if prev else "n/a"
+            body.append("%-14s %10s  %6s w/w  %s"
+                        % (s["name"][:14], fmt(cur, unit), chg, spark(v)))
+        lines.append("```\n%s\n```" % "\n".join(body))
+    lines.append("Sparklines show the trailing %d weeks. Last complete week is "
+                 "%s; the current week is still running." % (SPARK_WEEKS, weeks[-off]))
+    if drive_url:
+        lines.append("Full dashboard: %s" % drive_url)
+    open(out_path, "w").write("\n".join(lines))
+    print("wrote %s" % out_path)
+
+
 def main(series_path, out_path):
     d = json.load(open(series_path))
     weeks, charts = d["weeks"], d["charts"]
@@ -257,4 +302,8 @@ document.querySelectorAll('.plot').forEach(function(p){
 
 
 if __name__ == "__main__":
-    main(*sys.argv[1:3])
+    if "--slack" in sys.argv:
+        a = [x for x in sys.argv[1:] if x != "--slack"]
+        write_slack(json.load(open(a[0])), a[1], a[2] if len(a) > 2 else "")
+    else:
+        main(*sys.argv[1:3])

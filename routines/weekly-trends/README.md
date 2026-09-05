@@ -1,8 +1,8 @@
 # Weekly trend dashboard
 
 Fridays 12:00 ET. Charts the trailing 52 weeks of GTM metrics from the WEEKLY tab
-of the GTM Weekly Metrics sheet, uploads the dashboard to Drive, and emails the
-link. Source sheet is read-only.
+of the GTM Weekly Metrics sheet, uploads the dashboard to Drive, and posts the
+link as a Slack DM. Source sheet is read-only.
 
 ## Why the old version hung
 
@@ -86,3 +86,17 @@ on the WEEKLY tab, and the three candidate readings disagree:
   Merge Unified only.
 
 Pick one and the third chart can be swapped or added.
+
+## Delivery
+
+Slack DM to travis@merge.dev. Slack renders no HTML and a message cannot display
+an image on its own, so the HTML dashboard goes to Drive and Slack gets a text
+version: current values, week-over-week change, and a block-character sparkline
+per series inside a code fence, plus the Drive link.
+
+Sparklines cover the trailing 26 weeks rather than the full 52. Over 52 weeks the
+single $6.01M spike in Sep 2025 pins every later bar to the floor and the shape
+carries no information.
+
+Run `build_dashboard.py series.json slack.txt --slack "<drive url>"` to generate
+it. The HTML path is unchanged.

@@ -2,7 +2,7 @@
 
 Weekly triage of every customer account with a contract event in the next 90 days,
 ranked by ARR at risk. Names the three to five accounts worth a full `/contract`
-brief that week. Read-only against Salesforce; delivers one self-email.
+brief that week. Read-only against Salesforce; delivers a Slack DM.
 
 ## Files
 
@@ -83,10 +83,30 @@ Ops fixes the field.
 Trigger `trig_01DbXmdnRpdWNjxEFzBmtyJs`, `0 12 * * 1`, fresh session per fire,
 push notification on completion.
 
-**The trigger was created without MCP connectors attached.** Routines created
+**The trigger has no MCP connectors attached.** Routines created
 through the MCP API can only inherit connectors the calling session itself holds
 as passable grants, and this org does not permit setting them on the API call.
-Until Agent Handler and Gmail are attached to this routine in the claude.ai
-Routines UI, every fire will fail at step 1 with no Salesforce tools available.
+Until Agent Handler is attached to this routine in the claude.ai Routines UI,
+every fire will fail at step 1 with no Salesforce tools available.
+
+Separately, Agent Handler's Slack connection is not authorized on this account.
+`slack__lookup_user_by_email` returns `reauth_required`. Until that is fixed the
+routine reaches step 5 and stops, by design, rather than guessing a channel.
 The other five routines on this account have their connectors populated because
 they were created through that UI.
+
+## Delivery
+
+Slack DM to travis@merge.dev, resolved by email lookup at run time rather than a
+hardcoded id. One lead message carrying the week's read, the headline totals and
+the top five accounts to run `/contract` on, then the full 60-account table as
+threaded replies.
+
+The table is threaded rather than inline because it runs about 8,500 characters,
+past the point where Slack truncates a single message, and because the lead has
+to stay readable on a phone. The scorer emits the chunks pre-wrapped in code
+fences; the fence is what preserves the column alignment.
+
+Channel posting is forbidden in the prompt. The report carries per-account ARR
+and at-risk figures for 60 named customers, and a mis-typed channel is not a
+recoverable mistake.
